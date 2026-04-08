@@ -1,0 +1,71 @@
+---
+- name: Install Elasticsearch via Docker
+  hosts: elastic_hosts
+  become: true
+  tasks:
+    - name: Install prerequisites
+      apt:
+        name: [ca-certificates, curl, gnupg]
+        state: present
+        update_cache: yes
+
+    - name: Add Docker GPG key
+      shell: |
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+        chmod a+r /etc/apt/keyrings/docker.asc
+      args:
+        creates: /etc/apt/keyrings/docker.asc
+
+    - name: Add Docker repo
+      shell: |
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+      args:
+        creates: /etc/apt/sources.list.d/docker.list
+
+    - name: Install Docker
+      apt:
+        name: [docker-ce, docker-ce-cli, containerd.io, docker-compose-plugin]
+        state: present
+        update_cache: yes
+
+    - name: Start and enable Docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Set vm.max_map_count for Elasticsearch
+      shell: |
+        sysctl -w vm.max_map_count=262144
+        echo "vm.max_map_count=262144" > /etc/sysctl.d/99-elasticsearch.conf
+
+    - name: Create Elasticsearch data directory
+      file:
+        path: /opt/elasticsearch/data
+        state: directory
+        mode: "0777"
+
+    - name: Remove old container if exists
+      shell: docker rm -f elasticsearch 2>/dev/null || true
+
+    - name: Run Elasticsearch container
+      shell: |
+        docker run -d           --name elasticsearch           --restart unless-stopped           -p 9200:9200           -e "discovery.type=single-node"           -e "xpack.security.enabled=false"           -e "xpack.security.http.ssl.enabled=false"           -e "ES_JAVA_OPTS=-Xms512m -Xmx512m"           -v /opt/elasticsearch/data:/usr/share/elasticsearch/data           elasticsearch:8.13.0
+
+    - name: Wait for Elasticsearch to start
+      wait_for:
+        host: localhost
+        port: 9200
+        delay: 20
+        timeout: 180
+
+    - name: Check Elasticsearch health
+      uri:
+        url: http://localhost:9200/_cluster/health
+        return_content: yes
+      register: es_health
+
+    - name: Show Elasticsearch status
+      debug:
+        msg: "{{ es_health.json.status }}"

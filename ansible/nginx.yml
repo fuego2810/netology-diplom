@@ -1,0 +1,91 @@
+---
+- name: Install and configure Nginx
+  hosts: webservers
+  become: true
+
+  tasks:
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install nginx
+      apt:
+        name: nginx
+        state: present
+
+    - name: Create site directory
+      file:
+        path: /var/www/html
+        state: directory
+        mode: '0755'
+
+    - name: Deploy index.html
+      copy:
+        content: |
+          <!DOCTYPE html>
+          <html>
+          <head><title>Diplom Site</title></head>
+          <body>
+            <h1>Hello from {{ ansible_hostname }}</h1>
+            <p>Server: {{ inventory_hostname }}</p>
+          </body>
+          </html>
+        dest: /var/www/html/index.html
+        mode: '0644'
+
+    - name: Configure nginx
+      copy:
+        content: |
+          server {
+              listen 80 default_server;
+              root /var/www/html;
+              index index.html;
+              server_name _;
+
+              access_log /var/log/nginx/access.log;
+              error_log  /var/log/nginx/error.log;
+
+              location / {
+                  try_files $uri $uri/ =404;
+              }
+          }
+        dest: /etc/nginx/sites-available/default
+        mode: '0644'
+
+    - name: Enable nginx site
+      file:
+        src: /etc/nginx/sites-available/default
+        dest: /etc/nginx/sites-enabled/default
+        state: link
+
+    - name: Start and enable nginx
+      systemd:
+        name: nginx
+        state: started
+        enabled: yes
+
+    - name: Reload nginx
+      systemd:
+        name: nginx
+        state: reloaded
+
+- name: Enable nginx status page
+  hosts: webservers
+  become: true
+  tasks:
+    - name: Add nginx status location
+      blockinfile:
+        path: /etc/nginx/sites-available/default
+        insertbefore: "^}"
+        block: |
+          location /nginx_status {
+              stub_status on;
+              allow 127.0.0.1;
+              allow 192.168.0.0/16;
+              deny all;
+          }
+    - name: Reload nginx
+      systemd:
+        name: nginx
+        state: reloaded

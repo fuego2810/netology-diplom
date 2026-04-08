@@ -1,0 +1,94 @@
+---
+- name: Install Filebeat on web servers
+  hosts: webservers
+  become: true
+  vars:
+    elasticsearch_host: "elastic.ru-central1.internal"
+
+  tasks:
+    - name: Install prerequisites
+      apt:
+        name: [ca-certificates, curl, gnupg]
+        state: present
+        update_cache: yes
+
+    - name: Add Docker GPG key
+      shell: |
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+        chmod a+r /etc/apt/keyrings/docker.asc
+      args:
+        creates: /etc/apt/keyrings/docker.asc
+
+    - name: Add Docker repo
+      shell: |
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+      args:
+        creates: /etc/apt/sources.list.d/docker.list
+
+    - name: Install Docker
+      apt:
+        name: [docker-ce, docker-ce-cli, containerd.io]
+        state: present
+        update_cache: yes
+
+    - name: Start Docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Create Filebeat config directory
+      file:
+        path: /etc/filebeat
+        state: directory
+        mode: "0755"
+
+    - name: Configure Filebeat
+      copy:
+        dest: /etc/filebeat/filebeat.yml
+        mode: "0644"
+        content: |
+          filebeat.inputs:
+          - type: filestream
+            id: nginx-access
+            enabled: true
+            paths:
+              - /var/log/nginx/access.log
+            fields:
+              log_type: nginx_access
+              host: {{ inventory_hostname }}
+          - type: filestream
+            id: nginx-error
+            enabled: true
+            paths:
+              - /var/log/nginx/error.log
+            fields:
+              log_type: nginx_error
+              host: {{ inventory_hostname }}
+          output.elasticsearch:
+            hosts: ["http://{{ elasticsearch_host }}:9200"]
+            index: "nginx-logs-%{+yyyy.MM.dd}"
+          setup.ilm.enabled: false
+          setup.template.name: "nginx-logs"
+          setup.template.pattern: "nginx-logs-*"
+          logging.level: info
+
+    - name: Remove old Filebeat container
+      shell: docker rm -f filebeat 2>/dev/null || true
+
+    - name: Run Filebeat container
+      shell: |
+        docker run -d           --name filebeat           --restart unless-stopped           --user root           -v /etc/filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro           -v /var/log/nginx:/var/log/nginx:ro           docker.elastic.co/beats/filebeat:8.13.0           filebeat -e --strict.perms=false
+
+    - name: Wait for Filebeat to start
+      wait_for:
+        timeout: 15
+
+    - name: Check Filebeat container
+      shell: docker ps --filter name=filebeat --format "{{ '{{' }}.Status{{ '}}' }}"
+      register: fb_status
+
+    - name: Show status
+      debug:
+        msg: "Filebeat on {{ inventory_hostname }}: {{ fb_status.stdout }}"

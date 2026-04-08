@@ -1,0 +1,60 @@
+---
+- name: Install Kibana via Docker
+  hosts: kibana_hosts
+  become: true
+  tasks:
+    - name: Install prerequisites
+      apt:
+        name: [ca-certificates, curl, gnupg]
+        state: present
+        update_cache: yes
+
+    - name: Add Docker GPG key
+      shell: |
+        install -m 0755 -d /etc/apt/keyrings
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+        chmod a+r /etc/apt/keyrings/docker.asc
+      args:
+        creates: /etc/apt/keyrings/docker.asc
+
+    - name: Add Docker repo
+      shell: |
+        echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" > /etc/apt/sources.list.d/docker.list
+      args:
+        creates: /etc/apt/sources.list.d/docker.list
+
+    - name: Install Docker
+      apt:
+        name: [docker-ce, docker-ce-cli, containerd.io, docker-compose-plugin]
+        state: present
+        update_cache: yes
+
+    - name: Start and enable Docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Remove old container if exists
+      shell: docker rm -f kibana 2>/dev/null || true
+
+    - name: Run Kibana container
+      shell: |
+        docker run -d           --name kibana           --restart unless-stopped           -p 5601:5601           -e "ELASTICSEARCH_HOSTS=http://elastic.ru-central1.internal:9200"           kibana:8.13.0
+
+    - name: Wait for Kibana to start
+      wait_for:
+        host: localhost
+        port: 5601
+        delay: 20
+        timeout: 180
+
+    - name: Check Kibana status
+      uri:
+        url: http://localhost:5601/api/status
+        return_content: yes
+      register: kibana_status
+
+    - name: Show Kibana status
+      debug:
+        msg: "{{ kibana_status.json.status.overall.level }}"

@@ -1,0 +1,43 @@
+---
+- name: Install Zabbix Agent on all hosts
+  hosts: webservers,elastic_hosts,kibana_hosts
+  become: true
+  vars:
+    zabbix_server_ip: "zabbix.ru-central1.internal"
+
+  tasks:
+    - name: Download Zabbix repo
+      get_url:
+        url: https://repo.zabbix.com/zabbix/7.0/ubuntu/pool/main/z/zabbix-release/zabbix-release_7.0-2+ubuntu22.04_all.deb
+        dest: /tmp/zabbix-release.deb
+
+    - name: Install Zabbix repo
+      apt:
+        deb: /tmp/zabbix-release.deb
+
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+
+    - name: Install Zabbix agent
+      apt:
+        name: zabbix-agent
+        state: present
+
+    - name: Configure Zabbix agent
+      copy:
+        content: |
+          PidFile=/run/zabbix/zabbix_agentd.pid
+          LogFile=/var/log/zabbix/zabbix_agentd.log
+          LogFileSize=0
+          Server={{ zabbix_server_ip }}
+          ServerActive={{ zabbix_server_ip }}
+          Hostname={{ inventory_hostname }}
+          Include=/etc/zabbix/zabbix_agentd.d/*.conf
+        dest: /etc/zabbix/zabbix_agentd.conf
+
+    - name: Start and enable Zabbix agent
+      systemd:
+        name: zabbix-agent
+        state: restarted
+        enabled: yes

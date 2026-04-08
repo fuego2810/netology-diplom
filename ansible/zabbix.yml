@@ -1,0 +1,121 @@
+---
+- name: Install Zabbix Server
+  hosts: monitoring
+  become: true
+  tasks:
+    - name: Install prerequisites
+      apt:
+        name: [wget, gnupg2]
+        state: present
+        update_cache: yes
+
+    - name: Download Zabbix repo package
+      get_url:
+        url: https://repo.zabbix.com/zabbix/7.0/ubuntu/pool/main/z/zabbix-release/zabbix-release_7.0-2+ubuntu22.04_all.deb
+        dest: /tmp/zabbix-release.deb
+
+    - name: Install Zabbix repo
+      apt:
+        deb: /tmp/zabbix-release.deb
+
+    - name: Update apt cache after repo add
+      apt:
+        update_cache: yes
+
+    - name: Install Zabbix server, frontend, agent, mysql
+      apt:
+        name:
+          - zabbix-server-mysql
+          - zabbix-frontend-php
+          - zabbix-nginx-conf
+          - zabbix-sql-scripts
+          - zabbix-agent
+          - mysql-server
+          - python3-mysqldb
+        state: present
+
+    - name: Start and enable MySQL
+      systemd:
+        name: mysql
+        state: started
+        enabled: yes
+
+    - name: Create Zabbix DB and user
+      shell: |
+        mysql -u root <<-SQL
+          CREATE DATABASE IF NOT EXISTS zabbix CHARACTER SET utf8mb4 COLLATE utf8mb4_bin;
+          CREATE USER IF NOT EXISTS 'zabbix'@'localhost' IDENTIFIED BY 'zabbix_pass';
+          GRANT ALL PRIVILEGES ON zabbix.* TO 'zabbix'@'localhost';
+          SET GLOBAL log_bin_trust_function_creators = 1;
+          FLUSH PRIVILEGES;
+        SQL
+      args:
+        executable: /bin/bash
+
+    - name: Check if schema already imported
+      stat:
+        path: /etc/zabbix/.schema_imported
+      register: schema_imported
+
+    - name: Import Zabbix schema
+      shell: zcat /usr/share/zabbix-sql-scripts/mysql/server.sql.gz | mysql --default-character-set=utf8mb4 -uzabbix -pzabbix_pass zabbix
+      when: not schema_imported.stat.exists
+
+    - name: Disable log_bin_trust after import
+      shell: mysql -u root -e "SET GLOBAL log_bin_trust_function_creators = 0;"
+      when: not schema_imported.stat.exists
+
+    - name: Mark schema as imported
+      file:
+        path: /etc/zabbix/.schema_imported
+        state: touch
+      when: not schema_imported.stat.exists
+
+    - name: Configure Zabbix server DB password
+      lineinfile:
+        path: /etc/zabbix/zabbix_server.conf
+        regexp: '^# DBPassword='
+        line: 'DBPassword=zabbix_pass'
+
+    - name: Configure Zabbix nginx port
+      lineinfile:
+        path: /etc/nginx/conf.d/zabbix.conf
+        regexp: '.*listen.*'
+        line: '        listen 80;'
+        backrefs: yes
+
+    - name: Configure Zabbix nginx server_name
+      lineinfile:
+        path: /etc/nginx/conf.d/zabbix.conf
+        regexp: '.*server_name.*'
+        line: '        server_name _;'
+        backrefs: yes
+
+    - name: Disable default nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Start and enable Zabbix server
+      systemd:
+        name: zabbix-server
+        state: started
+        enabled: yes
+
+    - name: Start and enable Zabbix agent
+      systemd:
+        name: zabbix-agent
+        state: started
+        enabled: yes
+
+    - name: Start php-fpm
+      systemd:
+        name: php8.1-fpm
+        state: started
+        enabled: yes
+
+    - name: Restart nginx
+      systemd:
+        name: nginx
+        state: restarted
+        enabled: yes
